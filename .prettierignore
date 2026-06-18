@@ -2,3 +2,5 @@ node_modules
 dist
 .husky
 *.d.ts
+package.json
+eslint.config.js

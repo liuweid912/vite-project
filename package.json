@@ -49,11 +49,12 @@
     "vue-tsc": "^2.1.6"
   },
   "lint-staged": {
-  "*.{ts,vue,js}": [
-    "eslint --fix --quiet"
-  ],
-  "*.{ts,vue,js,scss,json,md}": [
-    "prettier --write --ignore eslint.config.js --ignore package.json --quiet"
-  ]
-}
+    "*.{ts,vue,js}": [
+      "eslint --fix --quiet",
+      "prettier --write --quiet"
+    ],
+    "*.{scss,md,!(package).json}": [
+      "prettier --write --quiet"
+    ]
+  }
 }
