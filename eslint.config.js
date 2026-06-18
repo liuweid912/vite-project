@@ -14,13 +14,11 @@ export default [
     files: ['**/*.{js,ts,vue}'],
     languageOptions: {
       globals: globals.browser,
-      // vue文件顶层解析器
       parser: pluginVue.parser,
       parserOptions: {
         ecmaVersion: 'latest',
         sourceType: 'module',
         extraFileExtensions: ['.vue'],
-        // 内部TS解析器，识别 as / 类型
         parser: tsParser
       }
     },
@@ -38,7 +36,8 @@ export default [
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }]
     }
   },
+  // 全局忽略类型声明文件、vite配置
   {
-    ignores: ['dist', 'node_modules', 'vite.config.ts']
+    ignores: ['dist', 'node_modules', '**/*.d.ts', 'vite.config.ts']
   }
 ]
