@@ -1,1 +1,7 @@
+echo "====================================="
+echo "📌 Git提交规范格式：type: 修改描述"
+echo "合法type：feat/fix/docs/style/refactor/perf/test/chore/revert"
+echo "示例：chore: 调整eslint与lint-staged配置"
+echo "====================================="
+
 npx --no -- commitlint --edit $1
