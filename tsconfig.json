@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "ignoreDeprecations": "6.0",
+    // 编译目标版本，兼容现代浏览器
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    // 模块标准，Vite使用bundler
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    // 类型库
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    // 跳过第三方类型检查，提速
+    "skipLibCheck": true,
+    // json导入支持
+    "resolveJsonModule": true,
+    // 分离模块，禁止生成js文件（由vite处理编译）
+    "isolatedModules": true,
+    "noEmit": true,
+    // Vue jsx语法支持
+    "jsx": "preserve",
+    // 严格模式（企业级强制开启）
+    "strict": true,
+    // 未使用变量/参数报错
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    // 空case穿透报错
+    "noFallthroughCasesInSwitch": true,
+    // 路径别名，对应vite alias
+    "baseUrl": "./",
+    "paths": {
+      "@/*": ["src/*"],
+      "@api/*": ["src/api/*"],
+      "@comp/*": ["src/components/*"],
+      "@hooks/*": ["src/hooks/*"]
+    }
+  },
+  // 需要校验的文件范围
+  "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.vue", "src/types/**/*.ts"],
+  // 排除目录
+  "exclude": ["node_modules", "dist"],
+  // 关联node侧ts配置
+  "references": [{ "path": "./tsconfig.node.json" }]
+}
