@@ -1,6 +1,6 @@
 {
   "compilerOptions": {
-    "ignoreDeprecations": "6.0",
+    // "ignoreDeprecations": "6.0",
     // 编译目标版本，兼容现代浏览器
     "target": "ES2020",
     "useDefineForClassFields": true,
@@ -26,12 +26,12 @@
     // 空case穿透报错
     "noFallthroughCasesInSwitch": true,
     // 路径别名，对应vite alias
-    "baseUrl": "./",
+    // "pathsBaseUrl": "./",
     "paths": {
-      "@/*": ["src/*"],
-      "@api/*": ["src/api/*"],
-      "@comp/*": ["src/components/*"],
-      "@hooks/*": ["src/hooks/*"]
+      "@/*": ["./src/*"],
+      "@api/*": ["./src/api/*"],
+      "@comp/*": ["./src/components/*"],
+      "@hooks/*": ["./src/hooks/*"]
     }
   },
   // 需要校验的文件范围

@@ -5,7 +5,7 @@ import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import VitePluginCompression from 'vite-plugin-compression'
 import { visualizer } from 'rollup-plugin-visualizer'
-
+import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const isBuild = command === 'build'
@@ -39,9 +39,12 @@ export default defineConfig(({ command, mode }) => {
       }
     },
     optimizeDeps: {
-      include: ['vue', 'vue-router', 'pinia', 'axios']
+      include: ['vue', 'vue-router', 'pinia', 'axios'],
+      // 新增：排除完整element-plus预构建，仅按需解析用到的组件
+      exclude: ['element-plus']
     },
     build: {
+      chunkSizeWarningLimit: 1200, // 分包告警阈值(KB)
       sourcemap: false,
       assetsInlineLimit: 4096,
       terserOptions: {
@@ -51,6 +54,11 @@ export default defineConfig(({ command, mode }) => {
         }
       },
       rollupOptions: {
+        // @ts-ignore
+        onLog(level, log, defaultHandler) {
+          if (log.message.includes('#__PURE__')) return
+          defaultHandler(level, log)
+        },
         output: {
           chunkFileNames: 'static/js/[name]-[hash].js',
           entryFileNames: 'static/js/[name]-[hash].js',
@@ -66,8 +74,12 @@ export default defineConfig(({ command, mode }) => {
           },
           manualChunks(id) {
             if (id.includes('node_modules')) {
-              if (id.includes('vue') || id.includes('vue-router') || id.includes('pinia')) return 'vue-vendor'
+              // 把 element-plus 匹配放到最顶部，优先命中
+              if (id.includes('element-plus')) return 'ep-vendor'
+              if (id.includes('@vueuse')) return 'vueuse'
+              if (id.includes('lodash-es')) return 'lodash'
               if (id.includes('axios')) return 'axios-vendor'
+              if (id.includes('vue') || id.includes('vue-router') || id.includes('pinia')) return 'vue-vendor'
               return 'common-vendor'
             }
             if (id.includes('src/components')) return 'components-chunk'
@@ -81,10 +93,22 @@ export default defineConfig(({ command, mode }) => {
         imports: ['vue', 'vue-router', 'pinia'],
         dts: 'src/types/auto-imports.d.ts',
         eslintrc: { enabled: true }
+        // resolvers: [ElementPlusResolver({ importStyle: 'css' })]
       }),
-      Components({ dts: 'src/types/components.d.ts' }),
+      Components({
+        dts: 'src/types/components.d.ts'
+        // resolvers: [ElementPlusResolver({
+        //   importStyle: 'css' // 自动引入对应组件单文件css
+        // })]
+      }),
       VitePluginCompression({ threshold: 10240, ext: '.gz' }),
-      isBuild && visualizer({ filename: 'dist/stats.html', open: false })
+      isBuild &&
+        visualizer({
+          filename: 'dist/stats.html',
+          open: true,
+          gzipSize: true, // 显示gzip压缩后体积
+          brotliSize: true // 显示brotli压缩后体积
+        })
     ].filter(Boolean)
   }
 })
