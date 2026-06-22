@@ -138,7 +138,7 @@
                   <strong>{{ todo.title }}</strong>
                   <span>{{ todo.time }}</span>
                 </div>
-                <el-tag :type="todo.type as TagStatus" effect="plain">{{ todo.label }}</el-tag>
+                <el-tag :type="todo.type" effect="plain">{{ todo.label }}</el-tag>
               </div>
             </div>
           </el-card>
@@ -223,7 +223,6 @@
     owner: '',
     level: levels.normal
   })
-  type TagStatus = 'success' | 'primary' | 'warning' | 'info' | 'danger' | undefined
   const todos = reactive([
     { title: '审核本周营销预算', time: '09:30', label: '财务', type: 'warning', done: false },
     { title: '跟进重点客户续费', time: '11:00', label: '客户', type: 'primary', done: false },
