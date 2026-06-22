@@ -39,9 +39,9 @@ export default defineConfig(({ command, mode }) => {
       }
     },
     optimizeDeps: {
-      include: ['vue', 'vue-router', 'pinia', 'axios'],
+      include: ['vue', 'vue-router', 'pinia', 'axios']
       // 新增：排除完整element-plus预构建，仅按需解析用到的组件
-      exclude: ['element-plus']
+      // exclude: ['element-plus']
     },
     build: {
       chunkSizeWarningLimit: 1200, // 分包告警阈值(KB)
@@ -92,14 +92,16 @@ export default defineConfig(({ command, mode }) => {
       AutoImport({
         imports: ['vue', 'vue-router', 'pinia'],
         dts: 'src/types/auto-imports.d.ts',
-        eslintrc: { enabled: true }
-        // resolvers: [ElementPlusResolver({ importStyle: 'css' })]
+        eslintrc: { enabled: true },
+        resolvers: [ElementPlusResolver({ importStyle: 'css' })]
       }),
       Components({
-        dts: 'src/types/components.d.ts'
-        // resolvers: [ElementPlusResolver({
-        //   importStyle: 'css' // 自动引入对应组件单文件css
-        // })]
+        dts: 'src/types/components.d.ts',
+        resolvers: [
+          ElementPlusResolver({
+            importStyle: 'css' // 自动引入对应组件单文件css
+          })
+        ]
       }),
       VitePluginCompression({ threshold: 10240, ext: '.gz' }),
       isBuild &&

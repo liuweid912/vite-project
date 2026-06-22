@@ -114,8 +114,9 @@
                 </el-form-item>
                 <el-form-item label="优先级">
                   <el-radio-group v-model="taskForm.level">
-                    <el-radio-button :label="levels.normal" />
-                    <el-radio-button :label="levels.urgent" />
+                    <!-- label 放展示文字，value 放绑定值 -->
+                    <el-radio-button :label="levels.normal" :value="levels.normal" />
+                    <el-radio-button :label="levels.urgent" :value="levels.urgent" />
                   </el-radio-group>
                 </el-form-item>
                 <el-button type="primary" class="full-button">创建任务</el-button>
@@ -223,7 +224,16 @@
     owner: '',
     level: levels.normal
   })
-  const todos = reactive([
+  type TagStatus = 'success' | 'primary' | 'warning' | 'info' | 'danger'
+
+  interface TodoItem {
+    title: string
+    time: string
+    label: string
+    type: TagStatus
+    done: boolean
+  }
+  const todos = reactive<TodoItem[]>([
     { title: '审核本周营销预算', time: '09:30', label: '财务', type: 'warning', done: false },
     { title: '跟进重点客户续费', time: '11:00', label: '客户', type: 'primary', done: false },
     { title: '检查库存预警策略', time: '14:00', label: '运营', type: 'success', done: true },
