@@ -16,8 +16,7 @@
     // 分离模块，禁止生成js文件（由vite处理编译）
     "isolatedModules": true,
     "noEmit": true,
-    // Vue jsx语法支持
-    "jsx": "preserve",
+    
     // 严格模式（企业级强制开启）
     "strict": true,
     // 未使用变量/参数报错
