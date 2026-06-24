@@ -17,16 +17,19 @@
     "@element-plus/icons-vue": "^2.3.2",
     "axios": "^1.7.7",
     "element-plus": "^2.3.14",
-    "highlight.js": "^11.11.1",
+    "markstream-vue": "^1.0.4-beta.0",
     "pinia": "^2.2.4",
+    "prismjs": "^1.30.0",
     "vue": "^3.5.10",
-    "vue-router": "^4.4.5"
+    "vue-router": "^4.4.5",
+    "vue3typed": "^0.1.5"
   },
   "devDependencies": {
     "@commitlint/cli": "^19.5.0",
     "@commitlint/config-conventional": "^19.5.0",
     "@eslint/js": "^9.12.0",
     "@types/node": "^22.7.5",
+    "@types/prismjs": "^1.26.6",
     "@typescript-eslint/eslint-plugin": "^8.61.1",
     "@typescript-eslint/parser": "^8.61.1",
     "@vitejs/plugin-vue": "^5.1.4",

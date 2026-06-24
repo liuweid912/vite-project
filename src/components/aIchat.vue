@@ -1,7 +1,17 @@
+<!--
+  aIchat.vue — AI 智能助手聊天组件
+
+  功能：
+  - SSE 流式对话
+  - 代码块自动识别 + highlight.js 语法着色
+  - 图片上传与预览
+  - 悬浮球可拖拽吸附左右边缘
+-->
 <template>
   <Teleport to="body">
-    <transition name="chat-window">
-      <section v-if="open" class="ai-chat-window" aria-label="AI 智能助手">
+    <!-- ============ 聊天窗口 ============ -->
+    <transition name="chat-window" @after-enter="onAfterEnter">
+      <section v-show="open" class="ai-chat-window" aria-label="AI 智能助手">
         <header class="chat-header">
           <div>
             <h2>AI 智能助手</h2>
@@ -10,14 +20,22 @@
           <button class="icon-button" type="button" aria-label="关闭聊天" @click="open = false">×</button>
         </header>
 
-        <div ref="chatBody" class="chat-body">
+        <div ref="chatBody" class="chat-body" @scroll="onChatScroll">
           <div v-for="(msg, idx) in messages" :key="idx" class="chat-message" :class="msg.role">
             <div class="avatar" :class="`${msg.role}-avatar`">
               {{ msg.role === 'user' ? '我' : 'AI' }}
             </div>
             <div class="message-content">
               <span class="message-name">{{ msg.role === 'user' ? '我' : 'AI 助手' }}</span>
-              <div class="bubble">
+
+              <div v-if="loading && msg.role === 'ai' && !msg.content" class="bubble typing-bubble">
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+                <span class="typing-dot"></span>
+              </div>
+
+              <div v-else class="bubble">
+                <!-- 图片 -->
                 <img
                   v-if="msg.imageUrl"
                   class="message-image"
@@ -25,7 +43,8 @@
                   :alt="msg.imageName || '上传图片'"
                   @click="previewImage(msg)"
                 />
-                <span v-if="msg.content">{{ msg.content }}</span>
+                <!-- 所有消息统一用 markstream-vue 渲染 Markdown（代码块由 PrismJS 高亮） -->
+                <MarkdownRender v-if="msg.content" :content="msg.content" custom-id="ai" class="msg-md" />
               </div>
             </div>
           </div>
@@ -48,11 +67,22 @@
       </section>
     </transition>
 
-    <button v-if="!open" class="chat-fab" type="button" aria-label="打开 AI 助手" @click="openChat">
+    <!-- ============ 悬浮球（可拖拽吸附） ============ -->
+    <button
+      :class="['chat-fab', { 'fab-hidden': open }]"
+      ref="fabRef"
+      :style="fabStyle"
+      type="button"
+      aria-label="打开 AI 助手"
+      @click="openChat"
+      @mousedown="onDragStart"
+      @touchstart="onTouchStart"
+    >
       AI
       <span>助手</span>
     </button>
 
+    <!-- ============ 图片全屏查看器 ============ -->
     <div v-if="previewImageUrl" class="image-viewer" @click="closeImageViewer">
       <button class="image-viewer-close" type="button" @click.stop="closeImageViewer">×</button>
       <img :src="previewImageUrl" :alt="previewImageName || '图片预览'" />
@@ -61,7 +91,53 @@
 </template>
 
 <script setup lang="ts">
-  import { nextTick, ref } from 'vue'
+  import { computed, defineComponent, h, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+  import Prism from 'prismjs'
+  import { setCustomComponents, removeCustomComponents } from 'markstream-vue'
+
+  // ============================================================
+  // PrismJS 自定义代码块组件（覆盖 markstream-vue 内置代码块渲染）
+  // ============================================================
+
+  /** 用 PrismJS 高亮代码块的自定义渲染组件 */
+  const PrismCodeBlock = defineComponent({
+    name: 'PrismCodeBlock',
+    props: {
+      node: { type: Object, required: true }
+    },
+    setup(props) {
+      return () => {
+        const lang = props.node?.language || ''
+        const code = props.node?.code || ''
+
+        let highlighted = ''
+        try {
+          const grammar = lang ? Prism.languages[lang] : null
+          if (grammar) {
+            highlighted = Prism.highlight(code, grammar, lang)
+          } else {
+            highlighted = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          }
+        } catch {
+          highlighted = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        }
+
+        return h('pre', { class: 'hljs-code-block' }, [
+          h('code', {
+            class: lang ? `language-${lang}` : '',
+            innerHTML: highlighted
+          })
+        ])
+      }
+    }
+  })
+
+  // 注册自定义代码块组件到 custom-id="ai" 的作用域
+  setCustomComponents('ai', { code_block: PrismCodeBlock })
+
+  // ============================================================
+  // 类型定义
+  // ============================================================
 
   type Message = {
     role: 'user' | 'ai'
@@ -76,6 +152,10 @@
     url: string
   }
 
+  // ============================================================
+  // 聊天状态
+  // ============================================================
+
   const open = ref(false)
   const messages = ref<Message[]>([{ role: 'ai', content: '你好，我是 AI 助手，有什么可以帮你？' }])
   const inputText = ref('')
@@ -86,10 +166,167 @@
   const previewImageUrl = ref('')
   const previewImageName = ref('')
 
+  /** 关闭前保存的滚动位置，重新打开时恢复 */
+  const savedScrollTop = ref(0)
+
+  /** 正在恢复滚动位置中，过渡期内屏蔽 scroll 事件避免覆盖 */
+  const isRestoring = ref(false)
+
+  // /** 流式输出中，最后一条 AI 消息是否已有内容（控制 loading 指示器显隐） */
+  // const latestAiContent = computed(() => {
+  //   const msgs = messages.value
+  //   if (!msgs.length) return ''
+  //   const last = msgs[msgs.length - 1]
+  //   return last.role === 'ai' ? last.content : ''
+  // })
+
+  // ============================================================
+  // 悬浮球拖拽状态
+  // ============================================================
+
+  /** 水平偏移（相对于左侧，单位 px），初始靠右 */
+  const dockLeft = ref(window.innerWidth - 80)
+
+  /** 垂直偏移（相对于底部，单位 px） */
+  const dockBottom = ref(28)
+
+  /** 当前是否正在拖拽中 */
+  const isDragging = ref(false)
+
+  /** 拖拽起始坐标（用于计算偏移差值） */
+  const dragStart = { x: 0, y: 0 }
+
+  /** 是否真正发生过拖拽（区分拖拽与点击） */
+  const didDrag = ref(false)
+
+  /** 按钮引用 */
+  const fabRef = ref<HTMLElement | null>(null)
+
+  /** 悬浮球样式（动态定位），拖拽中禁用过渡避免卡顿 */
+  const fabStyle = computed(() => ({
+    left: `${dockLeft.value}px`,
+    bottom: `${dockBottom.value}px`,
+    transition: isDragging.value ? 'none' : 'left 0.25s ease'
+  }))
+
+  // ============================================================
+  // 悬浮球拖拽逻辑
+  // ============================================================
+
+  /**
+   * 鼠标拖拽开始
+   */
+  const onDragStart = (e: MouseEvent) => {
+    if (open.value) return
+    e.preventDefault()
+    isDragging.value = true
+    didDrag.value = false
+    dragStart.x = e.clientX
+    dragStart.y = e.clientY
+
+    document.addEventListener('mousemove', onDragMove)
+    document.addEventListener('mouseup', onDragEnd)
+  }
+
+  /**
+   * 鼠标拖拽移动
+   */
+  const onDragMove = (e: MouseEvent) => {
+    if (!isDragging.value || !fabRef.value) return
+    const dx = e.clientX - dragStart.x
+    const dy = e.clientY - dragStart.y
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didDrag.value = true
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const fabW = 64
+    const fabH = 64
+    dockLeft.value = Math.max(12, Math.min(vw - fabW - 12, dockLeft.value + dx))
+    dockBottom.value = Math.max(12, Math.min(vh - fabH - 12, dockBottom.value - dy))
+    dragStart.x = e.clientX
+    dragStart.y = e.clientY
+  }
+
+  /**
+   * 鼠标拖拽结束 → 水平吸附到最近的左右边缘
+   */
+  const onDragEnd = () => {
+    isDragging.value = false
+    document.removeEventListener('mousemove', onDragMove)
+    document.removeEventListener('mouseup', onDragEnd)
+
+    if (fabRef.value) {
+      const rect = fabRef.value.getBoundingClientRect()
+      const center = rect.left + rect.width / 2
+      const vw = window.innerWidth
+      const fabW = 64
+      dockLeft.value = center < vw / 2 ? 16 : vw - 16 - fabW
+    }
+  }
+
+  /**
+   * 触摸拖拽开始（移动端）
+   */
+  const onTouchStart = (e: TouchEvent) => {
+    if (open.value) return
+    e.preventDefault()
+    isDragging.value = true
+    didDrag.value = false
+    const touch = e.touches[0]
+    dragStart.x = touch.clientX
+    dragStart.y = touch.clientY
+
+    document.addEventListener('touchmove', onTouchMove, { passive: false })
+    document.addEventListener('touchend', onTouchEnd)
+  }
+
+  /**
+   * 触摸拖拽移动
+   */
+  const onTouchMove = (e: TouchEvent) => {
+    if (!isDragging.value) return
+    e.preventDefault()
+    const touch = e.touches[0]
+    const dx = touch.clientX - dragStart.x
+    const dy = touch.clientY - dragStart.y
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) didDrag.value = true
+    const vw = window.innerWidth
+    const vh = window.innerHeight
+    const fabW = 64
+    const fabH = 64
+    dockLeft.value = Math.max(12, Math.min(vw - fabW - 12, dockLeft.value + dx))
+    dockBottom.value = Math.max(12, Math.min(vh - fabH - 12, dockBottom.value - dy))
+    dragStart.x = touch.clientX
+    dragStart.y = touch.clientY
+  }
+
+  /**
+   * 触摸拖拽结束 → 水平吸附
+   */
+  const onTouchEnd = () => {
+    isDragging.value = false
+    document.removeEventListener('touchmove', onTouchMove)
+    document.removeEventListener('touchend', onTouchEnd)
+
+    if (fabRef.value) {
+      const rect = fabRef.value.getBoundingClientRect()
+      const center = rect.left + rect.width / 2
+      const vw = window.innerWidth
+      const fabW = 64
+      dockLeft.value = center < vw / 2 ? 16 : vw - 16 - fabW
+    }
+  }
+
+  // ============================================================
+  // 聊天逻辑
+  // ============================================================
+
   const openChat = async () => {
+    if (didDrag.value) {
+      didDrag.value = false
+      return
+    }
+    isRestoring.value = true // 进入过渡期，屏蔽 scroll 事件
     open.value = true
-    await nextTick()
-    scrollToBottom()
   }
 
   const send = async () => {
@@ -108,8 +345,10 @@
     if (fileInput.value) fileInput.value.value = ''
     loading.value = true
 
-    const aiMsg: Message = { role: 'ai', content: '' }
-    messages.value.push(aiMsg)
+    // 先推入空消息，后续逐块追加（markstream-vue 会流式渲染不断增长的内容）
+    const idx = messages.value.length
+    messages.value.push({ role: 'ai', content: '' })
+    const aiMsg = messages.value[idx]
     await nextTick()
     scrollToBottom()
 
@@ -122,6 +361,8 @@
 
       if (!res.body) {
         aiMsg.content = '服务没有返回可读取的数据流。'
+        await nextTick()
+        scrollToBottom()
         return
       }
 
@@ -148,7 +389,7 @@
               scrollToBottom()
             }
           } catch {
-            // 忽略非 JSON 片段，兼容流式接口偶发的空行或心跳数据。
+            // 忽略非 JSON 片段
           }
         }
       }
@@ -158,9 +399,11 @@
       }
     } catch (err) {
       console.error(err)
-      aiMsg.content = '请求失败，请确认后端服务 http://127.0.0.1:3001/api/chat 是否已启动。'
+      aiMsg.content = '请求失败，请确认后端服务是否已启动。'
     } finally {
       loading.value = false
+      await nextTick()
+      scrollToBottom()
     }
   }
 
@@ -205,37 +448,159 @@
 
   const scrollToBottom = () => {
     nextTick(() => {
-      const el = chatBody.value
-      if (el) el.scrollTop = el.scrollHeight
+      requestAnimationFrame(() => {
+        const el = chatBody.value
+        if (el) el.scrollTop = el.scrollHeight
+      })
     })
   }
+
+  /**
+   * 实时记录聊天区域的滚动位置
+   * 绑定在 chatBody 的 @scroll 事件上，持续追踪 scrollTop
+   */
+  const onChatScroll = () => {
+    if (chatBody.value && !isRestoring.value) {
+      savedScrollTop.value = chatBody.value.scrollTop
+    }
+  }
+
+  /**
+   * transition 进入动画完成后恢复滚动位置
+   * @after-enter 钩子保证元素完全可见且布局稳定后执行
+   */
+  const onAfterEnter = () => {
+    if (savedScrollTop.value > 0) {
+      requestAnimationFrame(() => {
+        const el = chatBody.value
+        if (el) {
+          el.scrollTop = savedScrollTop.value
+        }
+        isRestoring.value = false
+      })
+    } else {
+      isRestoring.value = false
+    }
+  }
+
+  // ============================================================
+  // 生命周期
+  // ============================================================
+
+  /** 新消息加入后自动滚动到底部 */
+  watch(
+    () => messages.value.length,
+    () => {
+      scrollToBottom()
+    }
+  )
+
+  /** 组件卸载时清理拖拽事件监听和自定义组件注册 */
+  onBeforeUnmount(() => {
+    document.removeEventListener('mousemove', onDragMove)
+    document.removeEventListener('mouseup', onDragEnd)
+    document.removeEventListener('touchmove', onTouchMove)
+    document.removeEventListener('touchend', onTouchEnd)
+    removeCustomComponents('ai')
+  })
 </script>
 
 <style scoped>
+  /* ============================================================
+     悬浮球（可拖拽，吸附左右边缘）
+     ============================================================ */
   .chat-fab {
     position: fixed;
-    right: 28px;
-    bottom: 28px;
     z-index: 900;
     width: 64px;
     height: 64px;
     border: 0;
     border-radius: 50%;
-    background: #2563eb;
+    background: linear-gradient(135deg, #6366f1 0%, #2563eb 50%, #06b6d4 100%);
+    background-size: 200% 200%;
     color: #fff;
-    box-shadow: 0 18px 38px rgba(37, 99, 235, 0.35);
-    cursor: pointer;
+    cursor: grab;
     font-size: 18px;
     font-weight: 800;
+    transition:
+      left 0.25s ease,
+      transform 0.2s ease,
+      box-shadow 0.2s ease;
+    user-select: none;
+    touch-action: none;
+    /* 外发光 + 内层描边光晕 */
+    box-shadow:
+      0 8px 28px rgba(37, 99, 235, 0.45),
+      0 0 0 2px rgba(99, 102, 241, 0.25),
+      inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    animation: fabBreath 4s ease-in-out infinite;
+  }
+
+  .chat-fab::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, rgba(99, 102, 241, 0.35), rgba(6, 182, 212, 0.25));
+    filter: blur(10px);
+    z-index: -1;
+    animation: fabPulse 3s ease-in-out infinite;
+  }
+
+  .chat-fab:hover {
+    transform: scale(1.08);
+    box-shadow:
+      0 12px 40px rgba(37, 99, 235, 0.55),
+      0 0 0 4px rgba(99, 102, 241, 0.35),
+      inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  }
+
+  .chat-fab:active {
+    cursor: grabbing;
+    transform: scale(0.95);
+  }
+
+  /* 聊天窗口打开时隐藏悬浮球 */
+  .chat-fab.fab-hidden {
+    display: none;
   }
 
   .chat-fab span {
     display: block;
-    margin-top: 1px;
+    margin-top: 2px;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    opacity: 0.9;
   }
 
+  /* ——— 渐变背景动画 ——— */
+  @keyframes fabBreath {
+    0%,
+    100% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+  }
+
+  /* ——— 外圈呼吸光晕 ——— */
+  @keyframes fabPulse {
+    0%,
+    100% {
+      opacity: 0.6;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.12);
+    }
+  }
+
+  /* ============================================================
+     聊天窗口
+     ============================================================ */
   .ai-chat-window {
     position: fixed;
     right: 28px;
@@ -297,6 +662,13 @@
     padding: 16px;
     overflow-y: auto;
     background: #f7f9fc;
+  }
+  .chat-body::-webkit-scrollbar {
+    width: 5px;
+  }
+  .chat-body::-webkit-scrollbar-thumb {
+    background: rgba(154, 150, 150, 0.1);
+    border-radius: 3px;
   }
 
   .chat-message {
@@ -371,6 +743,134 @@
     background: #2563eb;
     color: #fff;
     border-color: #2563eb;
+  }
+
+  /* MarkdownRender 容器 */
+  .msg-md {
+    display: block;
+    width: 100%;
+  }
+
+  /* AI 正在输入指示器（三个跳动的点） */
+  .typing-bubble {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 12px 16px;
+    min-width: 60px;
+  }
+
+  .typing-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #94a3b8;
+    animation: dotBounce 1.2s ease-in-out infinite;
+  }
+
+  .typing-dot:nth-child(2) {
+    animation-delay: 0.2s;
+  }
+  .typing-dot:nth-child(3) {
+    animation-delay: 0.4s;
+  }
+
+  @keyframes dotBounce {
+    0%,
+    60%,
+    100% {
+      transform: translateY(0);
+      opacity: 0.4;
+    }
+    30% {
+      transform: translateY(-6px);
+      opacity: 1;
+    }
+  }
+
+  /* markstream-vue Markdown 渲染容器适配气泡 */
+  .bubble :deep(.markstream-vue) {
+    /* 确保代码块等元素在气泡内正确显示 */
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  /* 气泡内的代码块样式加强 */
+  .bubble :deep(.markstream-vue pre) {
+    margin: 8px 0 4px;
+    border-radius: 8px;
+  }
+  /* 去除气泡的外边距 */
+  .bubble :deep(.paragraph-node) {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  /* ——— PrismJS 代码块暗色样式 ——— */
+  .bubble :deep(.hljs-code-block) {
+    margin: 8px 0 4px;
+    padding: 12px 14px;
+    border-radius: 8px;
+    background: #1e293b;
+    color: #e2e8f0;
+    overflow-x: auto;
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre;
+  }
+
+  .bubble :deep(.hljs-code-block code) {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    background: transparent !important;
+  }
+
+  .chat-message.user .bubble :deep(.hljs-code-block) {
+    background: #1e3a5f;
+  }
+
+  /* ——— PrismJS 语法着色（适配深色背景） ——— */
+  .bubble :deep(.token.comment),
+  .bubble :deep(.token.prolog),
+  .bubble :deep(.token.doctype),
+  .bubble :deep(.token.cdata) {
+    color: #6a9955;
+    font-style: italic;
+  }
+
+  .bubble :deep(.token.keyword),
+  .bubble :deep(.token.selector),
+  .bubble :deep(.token.operator) {
+    color: #c586c0;
+  }
+
+  .bubble :deep(.token.string),
+  .bubble :deep(.token.attr-value) {
+    color: #ce9178;
+  }
+
+  .bubble :deep(.token.number),
+  .bubble :deep(.token.boolean) {
+    color: #b5cea8;
+  }
+
+  .bubble :deep(.token.function),
+  .bubble :deep(.token.class-name) {
+    color: #dcdcaa;
+  }
+
+  .bubble :deep(.token.tag),
+  .bubble :deep(.token.namespace) {
+    color: #569cd6;
+  }
+
+  .bubble :deep(.token.attr-name),
+  .bubble :deep(.token.builtin) {
+    color: #9cdcfe;
+  }
+
+  .bubble :deep(.token.punctuation) {
+    color: #d4d4d4;
   }
 
   .message-image {
@@ -536,8 +1036,13 @@
 
   @media (max-width: 640px) {
     .chat-fab {
-      right: 18px;
-      bottom: 18px;
+      width: 56px;
+      height: 56px;
+      font-size: 16px;
+    }
+
+    .chat-fab span {
+      font-size: 11px;
     }
 
     .ai-chat-window {

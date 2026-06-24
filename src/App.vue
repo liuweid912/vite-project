@@ -72,7 +72,7 @@
         </el-header>
 
         <!-- 文件标签栏：已打开的文件列表，支持切换和关闭 -->
-        <div class="tab-bar" v-if="openedFiles.length > 0">
+        <div class="tab-bar" v-if="openedFiles.length > 0" ref="tabBarRef" @wheel="onTabBarWheel">
           <div
             v-for="tab in openedFiles"
             :key="tab.path"
@@ -153,10 +153,8 @@
   import AIChat from './components/aIchat.vue'
   import type { TreeNode } from './types/tree'
 
-  // highlight.js — 代码语法着色
-  import hljs from 'highlight.js'
-  // GitHub 主题（浅色背景，适配代码查看器）
-  import 'highlight.js/styles/github.css'
+  // PrismJS — 代码语法着色
+  import Prism from 'prismjs'
 
   // ============================================================
   // 类型定义
@@ -230,8 +228,17 @@
   /** 加载状态：正在读取文件 */
   const readingFile = ref(false)
 
-  /** 已打开的文件标签列表（右侧标签栏） */
+  /** 已打开的文件标签（右侧标签栏） */
   const openedFiles = ref<OpenedFile[]>([])
+
+  /** 标签栏滚轮事件：将垂直滚动转换为水平滚动 */
+  const onTabBarWheel = (e: WheelEvent) => {
+    const el = e.currentTarget as HTMLElement | null
+    if (el) {
+      el.scrollLeft += e.deltaY
+      e.preventDefault()
+    }
+  }
 
   // ============================================================
   // 计算属性
@@ -299,32 +306,34 @@
 
   /**
    * 语法高亮处理
-   * 使用 highlight.js 将代码转换为带着色标记的 HTML
+   * 使用 PrismJS 将代码转换为带着色标记的 HTML
    * 按行分割后逐行渲染，保持与行号对齐
    *
    * 注意：
-   * - highlight.js 无内置 vue 语言，.vue 文件映射为 html
+   * - PrismJS 无内置 vue 语言，.vue 文件映射为 html
    *   （html 语言能识别 <template>/<script>/<style> 并分别高亮）
    */
   const highlightedLines = computed(() => {
     const content = fileContent.value
     if (!content) return []
 
-    // 获取当前文件的语言
+    // 获取当前文件的语言，PrismJS 中 ts/tsx 需要额外导入
     let lang = currentFile.value?.language || ''
-
-    // highlight.js 没有内置 'vue' 语言，映射为 'html'
-    // html 模式能高亮 <template> 部分，并自动切换 JS/CSS 高亮
+    // PrismJS 无内置 'vue'，映射为 'html'
     if (lang === 'vue') lang = 'html'
+    // PrismJS 使用 'typescript' 而非 'ts'
+    if (lang === 'ts') lang = 'typescript'
+    if (lang === 'tsx') lang = 'tsx'
 
     try {
-      // 使用 highlight.js 进行语法高亮
-      const result = hljs.highlight(content, {
-        language: lang,
-        ignoreIllegals: true // 语言不匹配时降级为纯文本
-      })
-      // 按换行符分割高亮后的 HTML，逐行渲染
-      return result.value.split('\n')
+      const grammar = lang ? Prism.languages[lang] : null
+      if (grammar) {
+        const result = Prism.highlight(content, grammar, lang)
+        return result.split('\n')
+      }
+      // 语言不支持时降级为纯文本
+      const escaped = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      return escaped.split('\n')
     } catch {
       // 降级：纯文本 HTML 转义后显示
       const escaped = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -752,9 +761,19 @@
     padding: 0 4px;
   }
 
-  /* 隐藏标签栏滚动条（保持简洁） */
+  /* 标签栏滚动条（细条可见，鼠标可拖动） */
   .tab-bar::-webkit-scrollbar {
-    height: 0;
+    height: 4px;
+  }
+  .tab-bar::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .tab-bar::-webkit-scrollbar-thumb {
+    background: #c1c7cd;
+    border-radius: 2px;
+  }
+  .tab-bar::-webkit-scrollbar-thumb:hover {
+    background: #a8adb4;
   }
 
   .tab-item {
@@ -961,56 +980,59 @@
 
   /* ── 代码语法着色覆盖 ──
      由于 <style scoped> 会为选择器添加 data 属性，
-     v-html 渲染的 hljs span 没有该属性，导致 hljs
-     全局样式可能被 scoped 的父级颜色覆盖。
+     v-html 渲染的 PrismJS span（.token-*）没有该属性，
+     导致 PrismJS 全局样式可能被 scoped 的父级颜色覆盖。
      在此显式定义常见着色类，确保高亮生效。 */
 
-  /* 注释：灰色斜体 */
-  .code-content :deep(.hljs-comment),
-  .code-content :deep(.hljs-quote),
-  .code-content :deep(.hljs-doctag) {
-    color: #6a737d !important;
+  /* 注释：绿色斜体 */
+  .code-content :deep(.token.comment),
+  .code-content :deep(.token.prolog),
+  .code-content :deep(.token.doctype),
+  .code-content :deep(.token.cdata) {
+    color: #6a9955 !important;
     font-style: italic;
   }
 
-  /* 关键字：蓝色 */
-  .code-content :deep(.hljs-keyword),
-  .code-content :deep(.hljs-selector-tag),
-  .code-content :deep(.hljs-type),
-  .code-content :deep(.hljs-title.class_),
-  .code-content :deep(.hljs-built_in) {
-    color: #d73a49 !important;
+  /* 关键字：紫色 */
+  .code-content :deep(.token.keyword),
+  .code-content :deep(.token.selector),
+  .code-content :deep(.token.operator) {
+    color: #af00db !important;
   }
 
-  /* 字符串：绿色 */
-  .code-content :deep(.hljs-string),
-  .code-content :deep(.hljs-attribute) {
-    color: #032f62 !important;
+  /* 字符串：橙棕色 */
+  .code-content :deep(.token.string),
+  .code-content :deep(.token.attr-value) {
+    color: #a31515 !important;
   }
 
-  /* 数字 */
-  .code-content :deep(.hljs-number),
-  .code-content :deep(.hljs-literal) {
-    color: #005cc5 !important;
+  /* 数字：蓝绿色 */
+  .code-content :deep(.token.number),
+  .code-content :deep(.token.boolean) {
+    color: #098658 !important;
   }
 
-  /* 函数名/方法 */
-  .code-content :deep(.hljs-title),
-  .code-content :deep(.hljs-title.function_) {
-    color: #6f42c1 !important;
+  /* 函数名/类名：黄色 */
+  .code-content :deep(.token.function),
+  .code-content :deep(.token.class-name) {
+    color: #795e26 !important;
   }
 
-  /* HTML 标签 */
-  .code-content :deep(.hljs-tag),
-  .code-content :deep(.hljs-name),
-  .code-content :deep(.hljs-attr) {
-    color: #22863a !important;
+  /* HTML 标签：蓝色 */
+  .code-content :deep(.token.tag),
+  .code-content :deep(.token.namespace) {
+    color: #0000ff !important;
   }
 
-  /* CSS 属性 */
-  .code-content :deep(.hljs-attribute),
-  .code-content :deep(.hljs-selector-class) {
+  /* 属性名：浅蓝 */
+  .code-content :deep(.token.attr-name),
+  .code-content :deep(.token.builtin) {
     color: #e36209 !important;
+  }
+
+  /* 标点符号 */
+  .code-content :deep(.token.punctuation) {
+    color: #333 !important;
   }
 
   /* 空行隐藏内容（保持行号对齐） */
