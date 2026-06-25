@@ -4,11 +4,13 @@ import { resolve } from 'path'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import VitePluginCompression from 'vite-plugin-compression'
+import { ViteImageOptimizer } from 'vite-plugin-image-optimizer'
 import { visualizer } from 'rollup-plugin-visualizer'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
   const isBuild = command === 'build'
+  const isAnalyze = process.env.ANALYZE === 'true'
 
   return {
     base: env.VITE_BASE_URL || '/',
@@ -22,9 +24,7 @@ export default defineConfig(({ command, mode }) => {
     },
     css: {
       preprocessorOptions: {
-        scss: {
-          additionalData: `@import "@/assets/styles/variables.scss";`
-        }
+        scss: {}
       }
     },
     server: {
@@ -76,8 +76,6 @@ export default defineConfig(({ command, mode }) => {
             if (id.includes('node_modules')) {
               // 把 element-plus 匹配放到最顶部，优先命中
               if (id.includes('element-plus')) return 'ep-vendor'
-              if (id.includes('@vueuse')) return 'vueuse'
-              if (id.includes('lodash-es')) return 'lodash'
               if (id.includes('axios')) return 'axios-vendor'
               if (id.includes('vue') || id.includes('vue-router') || id.includes('pinia')) return 'vue-vendor'
               return 'common-vendor'
@@ -104,7 +102,16 @@ export default defineConfig(({ command, mode }) => {
         ]
       }),
       VitePluginCompression({ threshold: 10240, ext: '.gz' }),
+      isBuild && VitePluginCompression({ threshold: 10240, ext: '.br' }),
       isBuild &&
+        ViteImageOptimizer({
+          png: { quality: 80 },
+          jpg: { quality: 80 },
+          jpeg: { quality: 80 },
+          svg: { multipass: true }
+        }),
+      isBuild &&
+        isAnalyze &&
         visualizer({
           filename: 'dist/stats.html',
           open: true,

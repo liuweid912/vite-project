@@ -50,6 +50,22 @@
           </div>
         </div>
 
+        <!-- 重连状态栏 -->
+        <div
+          v-if="isReconnecting || (retryCount >= MAX_RETRIES && lastRequest)"
+          class="reconnect-bar"
+          :class="{ 'reconnect-failed': retryCount >= MAX_RETRIES }"
+        >
+          <template v-if="isReconnecting">
+            <span class="reconnect-dot"></span>
+            <span>连接中断，正在重连 ({{ retryCount }}/{{ MAX_RETRIES }})...</span>
+          </template>
+          <template v-else>
+            <span>连接失败</span>
+            <button class="retry-button" type="button" @click="manualRetry">重试</button>
+          </template>
+        </div>
+
         <footer class="chat-footer">
           <div class="input-panel">
             <div v-if="selectedImage" class="image-preview">
@@ -165,6 +181,34 @@
   const selectedImage = ref<SelectedImage | null>(null)
   const previewImageUrl = ref('')
   const previewImageName = ref('')
+
+  // ============================================================
+  // 断线重连状态
+  // ============================================================
+
+  /** 当前流式会话的 sessionId（服务端分配，用于断点重连） */
+  const sessionId = ref('')
+
+  /** 当前流式会话最后收到的事件序号（用于断点重连） */
+  const lastEventId = ref(0)
+
+  /** 当前流式请求的 AbortController（新消息发送时用于中断旧的流） */
+  const streamController = ref<AbortController | null>(null)
+
+  /** 是否正在重连中 */
+  const isReconnecting = ref(false)
+
+  /** 重连计数 */
+  const retryCount = ref(0)
+
+  /** 最大自动重试次数 */
+  const MAX_RETRIES = 3
+
+  /** 重连基础延迟（ms），每次重试递增 */
+  const RETRY_BASE_DELAY = 1000
+
+  /** 保存最后一次请求上下文，用于手动重试 */
+  const lastRequest = ref<{ text: string; aiMsgIndex: number } | null>(null)
 
   /** 关闭前保存的滚动位置，重新打开时恢复 */
   const savedScrollTop = ref(0)
@@ -329,10 +373,174 @@
     open.value = true
   }
 
+  /**
+   * SSE 流式读取核心函数，支持自动断点重连
+   * @param url        请求地址
+   * @param body       请求体
+   * @param onChunk    收到内容片段的回调
+   * @param attempt   当前重试次数（内部递归使用）
+   */
+  async function readSSEStream(
+    url: string,
+    body: object,
+    onChunk: (content: string) => void,
+    attempt = 0
+  ): Promise<boolean> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    try {
+      const controller = new AbortController()
+      streamController.value = controller
+
+      // 请求超时（15s），防止后端无响应导致 fetch 永久挂起
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error('请求超时')), 15000)
+      })
+
+      const res = await Promise.race([
+        fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        }),
+        timeoutPromise
+      ])
+      clearTimeout(timeoutId)
+
+      if (!res.ok) {
+        if (res.status === 404) return false
+        throw new Error(`HTTP ${res.status}`)
+      }
+
+      if (!res.body) return false
+
+      // 重连成功，立即清除重连状态，避免 reader 挂起时 UI 卡在"正在重连"
+      isReconnecting.value = false
+      retryCount.value = 0
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let recvChunks = 0
+      let lastLogTime = Date.now()
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          console.log(`[重连] reader 返回 done=true，已接收 ${recvChunks} 个 chunk`)
+          break
+        }
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        let pendingId = 0
+        let hasNewData = false
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed) continue
+          hasNewData = true
+
+          if (trimmed.startsWith('id: ')) {
+            const idVal = parseInt(trimmed.slice(4), 10)
+            if (!isNaN(idVal)) pendingId = idVal
+          } else if (trimmed.startsWith('data: ')) {
+            const jsonStr = trimmed.slice(6)
+            if (jsonStr === '[DONE]') continue
+
+            try {
+              const json = JSON.parse(jsonStr)
+              // 首条消息包含 sessionId，记录后跳过
+              if (json.sessionId) {
+                sessionId.value = json.sessionId
+                continue
+              }
+              const content = json.choices?.[0]?.delta?.content || ''
+              if (content) {
+                recvChunks++
+                onChunk(content)
+                // 只在 data 成功处理后更新 lastEventId，避免断线时丢失未处理的事件
+                if (pendingId > 0) {
+                  lastEventId.value = pendingId
+                }
+              }
+            } catch {
+              // 忽略非 JSON 片段
+            }
+          }
+        }
+
+        // 每 30 秒打印一次诊断日志，方便观察 reader 是否仍在工作
+        if (hasNewData) {
+          const now = Date.now()
+          if (now - lastLogTime > 30000) {
+            console.log(`[重连] 运行中，已接收 ${recvChunks} 个 chunk，lastEventId=${lastEventId.value}`)
+            lastLogTime = now
+          }
+        }
+      }
+
+      console.log(`[重连] 流式读取完成，sessionId=${sessionId.value}`)
+      return true
+    } catch (err: any) {
+      clearTimeout(timeoutId)
+      if (err.name === 'AbortError') return false
+
+      const tag = sessionId.value ? '重连' : '重试'
+      console.error(`[${tag}] 第${attempt + 1}次尝试失败：`, err.message, {
+        attempt,
+        sessionId: sessionId.value,
+        lastEventId: lastEventId.value,
+        open: open.value
+      })
+
+      if (attempt < MAX_RETRIES && open.value) {
+        // 有 sessionId 则走重连端点，否则重试首次请求
+        const hasSession = !!sessionId.value
+        isReconnecting.value = true
+        retryCount.value = attempt + 1
+        const delay = RETRY_BASE_DELAY * (attempt + 1)
+        await new Promise(r => setTimeout(r, delay))
+        // 延迟后二次校验，防止期间被新请求重置或对话框关闭
+        if (!open.value) {
+          isReconnecting.value = false
+          return false
+        }
+        const success = await readSSEStream(
+          hasSession ? 'http://127.0.0.1:3001/api/chat/reconnect' : url,
+          hasSession ? { sessionId: sessionId.value, lastEventId: lastEventId.value } : body,
+          onChunk,
+          attempt + 1
+        )
+        // 如果递归重连也失败了，这里要确保 isReconnecting 被置为 false
+        if (!success) {
+          isReconnecting.value = false
+        }
+        return success
+      }
+
+      isReconnecting.value = false
+      return false
+    }
+  }
+
+  /**
+   * 发送消息入口
+   */
   const send = async () => {
     const text = inputText.value.trim()
     const image = selectedImage.value
     if ((!text && !image) || loading.value) return
+
+    // 取消上一次未完成的请求
+    streamController.value?.abort()
+
+    // 重置 session 和重连状态
+    sessionId.value = ''
+    lastEventId.value = 0
+    retryCount.value = 0
+    isReconnecting.value = false
 
     messages.value.push({
       role: 'user',
@@ -352,59 +560,55 @@
     await nextTick()
     scrollToBottom()
 
-    try {
-      const res = await fetch('http://127.0.0.1:3001/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text })
-      })
+    // 保存请求上下文供手动重试使用
+    lastRequest.value = { text, aiMsgIndex: idx }
 
-      if (!res.body) {
-        aiMsg.content = '服务没有返回可读取的数据流。'
-        await nextTick()
-        scrollToBottom()
-        return
-      }
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        const chunk = decoder.decode(value)
-        const lines = chunk.split('\n').filter(line => line.trim())
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.replace('data: ', '').trim()
-          if (data === '[DONE]') continue
-
-          try {
-            const json = JSON.parse(data)
-            const content = json.choices?.[0]?.delta?.content || ''
-            if (content) {
-              aiMsg.content += content
-              scrollToBottom()
-            }
-          } catch {
-            // 忽略非 JSON 片段
-          }
-        }
-      }
-
-      if (!aiMsg.content) {
-        aiMsg.content = '暂时没有收到回复。'
-      }
-    } catch (err) {
-      console.error(err)
-      aiMsg.content = '请求失败，请确认后端服务是否已启动。'
-    } finally {
-      loading.value = false
-      await nextTick()
+    const success = await readSSEStream('http://127.0.0.1:3001/api/chat', { text }, content => {
+      aiMsg.content += content
       scrollToBottom()
+    })
+
+    if (!aiMsg.content) {
+      aiMsg.content = success ? '暂时没有收到回复。' : '请求失败，请确认后端服务是否已启动。'
+    } else if (!success) {
+      aiMsg.content += '\n\n[连接中断，请点击重试按钮]'
     }
+
+    loading.value = false
+    await nextTick()
+    scrollToBottom()
+  }
+
+  /**
+   * 手动重试（重试耗尽后用户点击重试按钮）
+   */
+  const manualRetry = async () => {
+    if (!lastRequest.value || !sessionId.value || loading.value) return
+    retryCount.value = 0
+    isReconnecting.value = true
+    loading.value = true
+    const aiMsg = messages.value[lastRequest.value.aiMsgIndex]
+    if (!aiMsg) {
+      isReconnecting.value = false
+      loading.value = false
+      return
+    }
+
+    const success = await readSSEStream(
+      'http://127.0.0.1:3001/api/chat/reconnect',
+      { sessionId: sessionId.value, lastEventId: lastEventId.value },
+      content => {
+        aiMsg.content += content
+        scrollToBottom()
+      }
+    )
+
+    if (!success) {
+      aiMsg.content += '\n\n[连接中断，请点击重试按钮]'
+    }
+    loading.value = false
+    await nextTick()
+    scrollToBottom()
   }
 
   const openImagePicker = () => {
@@ -487,6 +691,13 @@
   // 生命周期
   // ============================================================
 
+  /** 对话框关闭时中止正在进行的请求 */
+  watch(open, val => {
+    if (!val) {
+      streamController.value?.abort()
+    }
+  })
+
   /** 新消息加入后自动滚动到底部 */
   watch(
     () => messages.value.length,
@@ -497,6 +708,7 @@
 
   /** 组件卸载时清理拖拽事件监听和自定义组件注册 */
   onBeforeUnmount(() => {
+    streamController.value?.abort()
     document.removeEventListener('mousemove', onDragMove)
     document.removeEventListener('mouseup', onDragEnd)
     document.removeEventListener('touchmove', onTouchMove)
@@ -985,6 +1197,63 @@
   .send-button:disabled {
     background: #bfdbfe;
     cursor: not-allowed;
+  }
+
+  /* ============================================================
+     重连状态栏
+     ============================================================ */
+  .reconnect-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #fef3c7;
+    border-bottom: 1px solid #f59e0b;
+    font-size: 13px;
+    color: #92400e;
+  }
+
+  .reconnect-bar.reconnect-failed {
+    background: #fee2e2;
+    border-bottom-color: #ef4444;
+    color: #991b1b;
+  }
+
+  .reconnect-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #f59e0b;
+    animation: reconnectPulse 1s ease-in-out infinite;
+  }
+
+  @keyframes reconnectPulse {
+    0%,
+    100% {
+      opacity: 0.4;
+      transform: scale(0.8);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .retry-button {
+    margin-left: auto;
+    padding: 4px 12px;
+    border: 1px solid #ef4444;
+    border-radius: 6px;
+    background: #fff;
+    color: #dc2626;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: background 0.15s;
+  }
+
+  .retry-button:hover {
+    background: #fef2f2;
   }
 
   .image-viewer {

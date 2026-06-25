@@ -86,6 +86,21 @@
     "watch": true,
     "watchEffect": true,
     "watchPostEffect": true,
-    "watchSyncEffect": true
+    "watchSyncEffect": true,
+    "ElAvatar": true,
+    "ElButton": true,
+    "ElCard": true,
+    "ElCheckbox": true,
+    "ElForm": true,
+    "ElFormItem": true,
+    "ElInput": true,
+    "ElMenu": true,
+    "ElMenuItem": true,
+    "ElOption": true,
+    "ElRadioButton": true,
+    "ElRadioGroup": true,
+    "ElSelect": true,
+    "ElTable": true,
+    "ElTableColumn": true
   }
 }
